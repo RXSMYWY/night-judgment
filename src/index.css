@@ -1,0 +1,80 @@
+:root {
+  font-family: "Noto Serif SC", "Source Han Serif SC", "Songti SC", Georgia, serif;
+  color: #e9e1d0;
+  background: #070b11;
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+  --ink: #070b11;
+  --panel: rgba(13, 19, 28, 0.92);
+  --panel-soft: rgba(21, 28, 39, 0.76);
+  --line: rgba(208, 189, 151, 0.18);
+  --line-strong: rgba(208, 189, 151, 0.42);
+  --cream: #e9e1d0;
+  --muted: #918b83;
+  --gold: #c9a96e;
+  --gold-light: #f0d6a0;
+  --blood: #9e2635;
+  --blue: #86a8d5;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html {
+  min-width: 320px;
+  background: #070b11;
+}
+
+body {
+  margin: 0;
+  min-width: 320px;
+  min-height: 100vh;
+  overflow-x: hidden;
+}
+
+button,
+input,
+textarea {
+  font: inherit;
+}
+
+button {
+  color: inherit;
+}
+
+button:focus-visible,
+input:focus-visible,
+textarea:focus-visible,
+summary:focus-visible {
+  outline: 2px solid var(--gold-light);
+  outline-offset: 3px;
+}
+
+button:disabled {
+  cursor: not-allowed;
+  opacity: 0.42;
+}
+
+#root {
+  min-height: 100vh;
+}
+
+::selection {
+  color: #0a0d12;
+  background: var(--gold-light);
+}
+
+::-webkit-scrollbar {
+  width: 8px;
+}
+
+::-webkit-scrollbar-track {
+  background: #080c12;
+}
+
+::-webkit-scrollbar-thumb {
+  background: #3e392f;
+  border-radius: 8px;
+}
