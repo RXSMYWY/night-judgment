@@ -3,7 +3,7 @@ services:
     name: night-judgment-room-server
     runtime: node
     plan: free
-    buildCommand: npm install
+    buildCommand: npm install -g npm@latest && npm install
     startCommand: npm run server
     healthCheckPath: /health
     envVars:
