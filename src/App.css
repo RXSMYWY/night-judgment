@@ -3,6 +3,8 @@
   min-height: 100vh;
   overflow: hidden;
   background:
+    linear-gradient(rgba(5, 9, 15, 0.58), rgba(5, 8, 13, 0.9)),
+    url("./assets/village-night-bg.png") center / cover fixed,
     radial-gradient(circle at 72% 20%, rgba(69, 82, 111, 0.22), transparent 24rem),
     linear-gradient(180deg, #0a1019 0%, #080b10 58%, #0b0d11 100%);
 }
@@ -759,7 +761,6 @@
   border-radius: 50%;
   border: 1px solid var(--line-strong);
   background-color: #101720;
-  background-image: url("/player-avatar-atlas.jpg");
   background-repeat: no-repeat;
   background-size: 400% 400%;
   filter: saturate(0.72) contrast(1.08);
@@ -769,7 +770,6 @@
   width: 100%;
   height: 100%;
   background-color: #0b1018;
-  background-image: url("/role-atlas.jpg");
   background-repeat: no-repeat;
   background-size: 300% 200%;
   filter: saturate(0.8) contrast(1.08);
@@ -975,8 +975,8 @@
   min-width: 0;
   padding: 26px 24px 28px;
   background:
-    radial-gradient(ellipse at center, rgba(46, 52, 63, 0.28), transparent 52%),
-    linear-gradient(rgba(9, 14, 21, 0.76), rgba(8, 11, 16, 0.96));
+    radial-gradient(ellipse at center, rgba(46, 52, 63, 0.22), transparent 52%),
+    linear-gradient(rgba(9, 14, 21, 0.7), rgba(8, 11, 16, 0.9));
 }
 
 .table-stage::before {
@@ -1198,6 +1198,61 @@
   gap: 20px;
   border: 1px solid var(--line);
   background: rgba(10, 15, 22, 0.96);
+}
+
+.result-stack {
+  position: relative;
+  z-index: 3;
+  display: grid;
+  gap: 12px;
+}
+
+.action-history {
+  max-height: 250px;
+  overflow: hidden;
+  border: 1px solid var(--line);
+  background: rgba(7, 11, 17, 0.94);
+}
+
+.action-history header {
+  display: flex;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 13px 16px;
+  border-bottom: 1px solid var(--line);
+}
+
+.action-history header span {
+  color: var(--gold-light);
+}
+
+.action-history header strong {
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.action-history > div {
+  max-height: 190px;
+  overflow-y: auto;
+  padding: 8px 16px 14px;
+}
+
+.action-history p {
+  display: grid;
+  grid-template-columns: 64px 48px 1fr;
+  gap: 10px;
+  margin: 8px 0;
+  color: #b9b1a4;
+  font-size: 11px;
+}
+
+.action-history p b {
+  color: var(--gold);
+  font-weight: 500;
+}
+
+.action-history p span {
+  color: #e1d7c5;
 }
 
 .action-dock > div:first-child span,

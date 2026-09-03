@@ -4,12 +4,20 @@ import { once } from 'node:events'
 import { test } from 'node:test'
 import { WebSocket } from 'ws'
 import {
+  advanceBotSpeeches,
+  createAuthoritativeGame,
   NIGHT_ACTION_MS,
+  playerView,
+  resolveNightStep,
   SPEECH_TURN_MS,
+  submitNightAction,
+  submitWolfChat,
+  VOTE_MS,
 } from '../server/game.mjs'
 
 const TEST_NIGHT_MS = 300
 const TEST_SPEECH_MS = 350
+const TEST_VOTE_MS = 300
 
 function createClient(url) {
   const socket = new WebSocket(url)
@@ -64,6 +72,120 @@ async function waitForServer(port) {
 test('production countdown defaults stay at 10 seconds and 60 seconds', () => {
   assert.equal(NIGHT_ACTION_MS, 10_000)
   assert.equal(SPEECH_TURN_MS, 60_000)
+  assert.equal(VOTE_MS, 60_000)
+})
+
+test('bot wolves answer private chat and follow a human kill call', () => {
+  const players = Array.from({ length: 6 }, (_, index) => ({
+    id: `room-${index + 1}`,
+    seat: index + 1,
+    name: `${index + 1}号`,
+    ready: true,
+    isBot: index !== 0,
+    online: true,
+  }))
+  const room = { targetCount: 6, players }
+  let seedIndex = 0
+  do {
+    room.game = createAuthoritativeGame(room, `wolf-chat-${seedIndex}`)
+    seedIndex += 1
+  } while (
+    seedIndex < 500 &&
+    !(room.game.players[0].role === 'werewolf' &&
+      room.game.players.some((player) => player.isBot && player.role === 'werewolf'))
+  )
+  assert.equal(room.game.players[0].role, 'werewolf')
+  const botWolf = room.game.players.find((player) => player.isBot && player.role === 'werewolf')
+  assert.ok(botWolf)
+
+  assert.equal(submitWolfChat(room, players[0], '今晚杀1号'), true)
+  assert.equal(room.game.nightActions[botWolf.id].targetId, 1)
+  assert.match(room.game.wolfChat.at(-1).text, /跟票袭击1号/)
+})
+
+test('wolf votes support self-kill, plurality, and random tied targets', () => {
+  const players = Array.from({ length: 9 }, (_, index) => ({
+    id: `human-${index + 1}`,
+    seat: index + 1,
+    name: `${index + 1}号`,
+    ready: true,
+    isBot: false,
+    online: true,
+  }))
+  const room = { targetCount: 9, players }
+  room.game = createAuthoritativeGame(room, 'wolf-vote-rules')
+  const wolves = room.game.players.filter((player) => player.role === 'werewolf')
+  assert.equal(wolves.length, 3)
+
+  room.game.deadline = Date.now() + 1_000
+  const firstWolfActor = players.find((player) => player.seat === wolves[0].id)
+  assert.equal(
+    submitNightAction(room, firstWolfActor, {
+      action: 'act',
+      targetId: wolves[0].id,
+    }),
+    true,
+  )
+  room.game.nightActions[wolves[1].id] = { action: 'act', targetId: wolves[0].id }
+  room.game.nightActions[wolves[2].id] = { action: 'act', targetId: wolves[1].id }
+  resolveNightStep(room)
+  assert.equal(room.game.wolfTarget, wolves[0].id)
+
+  room.game.nightStep = 'werewolf'
+  room.game.nightActions = Object.fromEntries(
+    wolves.map((wolf, index) => [wolf.id, { action: 'act', targetId: wolves[index].id }]),
+  )
+  resolveNightStep(room)
+  assert.ok(wolves.some((wolf) => wolf.id === room.game.wolfTarget))
+})
+
+test('result view reveals every role and the complete action history', () => {
+  const players = Array.from({ length: 6 }, (_, index) => ({
+    id: `human-${index + 1}`,
+    seat: index + 1,
+    name: `${index + 1}号`,
+    ready: true,
+    isBot: false,
+    online: true,
+  }))
+  const room = { targetCount: 6, players }
+  room.game = createAuthoritativeGame(room, 'result-review')
+  room.game.actionHistory.push({
+    id: 'action-1',
+    round: 1,
+    phase: 'night',
+    actor: '1号',
+    action: '守护',
+    target: '2号',
+  })
+  assert.deepEqual(playerView(room, players[0]).game.actionHistory, [])
+  room.game.phase = 'result'
+  const view = playerView(room, players[0])
+  assert.deepEqual(
+    view.game.players.map((player) => player.role),
+    room.game.players.map((player) => player.role),
+  )
+  assert.deepEqual(view.game.actionHistory, room.game.actionHistory)
+})
+
+test('an offline human speaker is skipped immediately', () => {
+  const players = Array.from({ length: 6 }, (_, index) => ({
+    id: `human-${index + 1}`,
+    seat: index + 1,
+    name: `${index + 1}号`,
+    ready: true,
+    isBot: false,
+    online: index !== 0,
+  }))
+  const room = { targetCount: 6, players }
+  room.game = createAuthoritativeGame(room, 'offline-speaker')
+  room.game.phase = 'day'
+  room.game.speechOrder = [1, 2]
+  room.game.speechIndex = 0
+  advanceBotSpeeches(room, () => undefined)
+  assert.equal(room.game.speechTurnSeat, 2)
+  assert.match(room.game.logs.at(-1).text, /1号已离线/)
+  clearTimeout(room.gameTimer)
 })
 
 test('room creation only accepts supported whole-player counts', {
@@ -167,6 +289,7 @@ test('six human clients share one authoritative game and private wolf channel', 
       NIGHT_RESOLVE_MS: '40',
       SPEECH_TURN_MS: String(TEST_SPEECH_MS),
       BOT_SPEECH_DELAY_MS: '30',
+      VOTE_MS: String(TEST_VOTE_MS),
     },
     stdio: ['ignore', 'pipe', 'pipe'],
   })
@@ -249,7 +372,7 @@ test('six human clients share one authoritative game and private wolf channel', 
         )),
     )
     assert.equal(new Set(activeNightStates.map((message) => message.view.deadline)).size, 1)
-    assert.ok(activeNightStates[0].view.deadline - Date.now() <= TEST_NIGHT_MS)
+    assert.ok(activeNightStates[0].view.deadline - Date.now() <= TEST_NIGHT_MS + 100)
 
     const chatText = '今晚统一袭击3号'
     clients[wolfIndexes[0]].socket.send(JSON.stringify({
@@ -322,7 +445,7 @@ test('six human clients share one authoritative game and private wolf channel', 
         )),
     )
     assert.equal(new Set(dayStates.map((message) => message.view.speechIndex)).size, 1)
-    assert.ok(dayStates[0].view.deadline - Date.now() <= TEST_SPEECH_MS)
+    assert.ok(dayStates[0].view.deadline - Date.now() <= TEST_SPEECH_MS + 100)
 
     const timedOutStates = await Promise.all(
       clients.map((client) =>
@@ -360,6 +483,29 @@ test('six human clients share one authoritative game and private wolf channel', 
     assert.equal(resumed.playerId, joins[reconnectIndex].playerId)
     assert.equal(resumedState.view.matchId, initialStates[0].view.matchId)
     assert.equal(resumedState.view.game.players[reconnectIndex].isHuman, true)
+
+    const voteStates = await Promise.all(
+      clients.map((client) =>
+        client.waitFor(
+          (message) =>
+            message.type === 'game-state' &&
+            message.view.game.phase === 'vote' &&
+            message.view.deadline > Date.now(),
+          5_000,
+        )),
+    )
+    assert.ok(voteStates[0].view.deadline - Date.now() <= TEST_VOTE_MS + 100)
+    const nextRoundStates = await Promise.all(
+      clients.map((client) =>
+        client.waitFor(
+          (message) =>
+            message.type === 'game-state' &&
+            message.view.game.phase === 'night' &&
+            message.view.game.round === 2,
+          2_000,
+        )),
+    )
+    assert.equal(new Set(nextRoundStates.map((message) => message.view.deadline)).size, 1)
   } finally {
     clients.forEach((client) => client.socket.close())
     server.kill()

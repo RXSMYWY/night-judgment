@@ -8,6 +8,7 @@ import {
   playerView,
   resolveNight,
   resolveNightStep,
+  resolveVote,
   submitNightAction,
   submitSpeech,
   submitVote,
@@ -77,7 +78,7 @@ function scheduleNight(room) {
     if (room.game.nightStep === 'resolve') {
       resolveNight(room)
       if (room.game.phase === 'day') {
-        advanceBotSpeeches(room, () => broadcastGame(room))
+        advanceBotSpeeches(room, () => broadcastTimedGame(room))
       } else {
         broadcastGame(room)
       }
@@ -87,6 +88,33 @@ function scheduleNight(room) {
     broadcastGame(room)
     scheduleNight(room)
   }, delay)
+}
+
+function scheduleVote(room) {
+  clearTimeout(room.gameTimer)
+  if (room.game?.phase !== 'vote') return
+  const delay = Math.max(0, room.game.deadline - Date.now())
+  room.gameTimer = setTimeout(() => {
+    if (!resolveVote(room)) return
+    broadcastGame(room)
+    if (room.game.phase === 'night') scheduleNight(room)
+  }, delay)
+}
+
+function broadcastTimedGame(room) {
+  broadcastGame(room)
+  if (room.game.phase === 'vote') {
+    const hasOnlineHumanVoter = room.players.some((item) => {
+      const gamePlayer = room.game.players.find((player) => player.id === item.seat)
+      return !item.isBot && item.online && gamePlayer?.alive
+    })
+    if (!hasOnlineHumanVoter && resolveVote(room)) {
+      broadcastGame(room)
+      if (room.game.phase === 'night') scheduleNight(room)
+      return
+    }
+    scheduleVote(room)
+  }
 }
 
 function normalizeSeats(room) {
@@ -279,7 +307,7 @@ function handleRoomAction(socket, message) {
   }
 
   if (message.type === 'speech' && room.status === 'playing') {
-    if (!submitSpeech(room, player, message.text, () => broadcastGame(room))) {
+    if (!submitSpeech(room, player, message.text, () => broadcastTimedGame(room))) {
       send(socket, { type: 'error', message: '当前还没有轮到你发言。' })
     }
   }
@@ -309,6 +337,25 @@ function disconnect(socket) {
   if (leaving.socket !== socket) return
   leaving.online = false
   leaving.socket = undefined
+  if (
+    room.status === 'playing' &&
+    room.game?.phase === 'day' &&
+    room.game.speechTurnSeat === leaving.seat
+  ) {
+    advanceBotSpeeches(room, () => broadcastTimedGame(room))
+    return
+  }
+  if (room.status === 'playing' && room.game?.phase === 'vote') {
+    const pendingOnlineVoter = room.players.some((item) => {
+      const gamePlayer = room.game.players.find((player) => player.id === item.seat)
+      return !item.isBot && item.online && gamePlayer?.alive && !room.game.votes[item.seat]
+    })
+    if (!pendingOnlineVoter && resolveVote(room)) {
+      broadcastGame(room)
+      if (room.game.phase === 'night') scheduleNight(room)
+      return
+    }
+  }
   if (room.status === 'lobby') {
     clearTimeout(leaving.disconnectTimer)
     leaving.disconnectTimer = setTimeout(() => {

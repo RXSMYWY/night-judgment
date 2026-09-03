@@ -44,6 +44,15 @@ export type LogEntry = {
   visibility?: 'public' | 'human'
 }
 
+export type ActionRecord = {
+  id: string
+  round: number
+  phase: Phase
+  actor: string
+  action: string
+  target: string
+}
+
 export type GameState = {
   players: Player[]
   phase: Phase
@@ -59,6 +68,7 @@ export type GameState = {
   poisonTarget?: number
   nightHealed: boolean
   privateNotes: Record<number, string[]>
+  actionHistory: ActionRecord[]
 }
 
 export const ROLES: Record<RoleKey, Role> = {
@@ -231,6 +241,7 @@ export function createGame(count: number, humanSeat = 1, seed?: string): GameSta
     nightStep: 'werewolf',
     nightHealed: false,
     privateNotes: {},
+    actionHistory: [],
     logs: [
       {
         id: makeId(),
@@ -335,9 +346,27 @@ export function actNight(game: GameState, targetId?: number, action = 'act'): Ga
   const privateNotes = Object.fromEntries(
     Object.entries(game.privateNotes).map(([id, notes]) => [id, [...notes]]),
   )
+  const actionHistory = [...game.actionHistory]
+  const recordAction = (actor: string, actionName: string, target = '跳过') => {
+    actionHistory.push({
+      id: makeId(),
+      round: game.round,
+      phase: game.phase,
+      actor,
+      action: actionName,
+      target,
+    })
+  }
   const step = game.nightStep
   const next = nextNightStep(game, step)
-  const result: GameState = { ...game, players, logs, privateNotes, nightStep: next }
+  const result: GameState = {
+    ...game,
+    players,
+    logs,
+    privateNotes,
+    actionHistory,
+    nightStep: next,
+  }
 
   if (step === 'werewolf') {
     const candidates = players.filter(
@@ -345,6 +374,12 @@ export function actNight(game: GameState, targetId?: number, action = 'act'): Ga
     )
     result.wolfTarget =
       human.role === 'werewolf' && targetId ? targetId : randomFrom(candidates)?.id
+    const target = players.find((player) => player.id === result.wolfTarget)
+    recordAction(
+      players.find((player) => player.alive && player.role === 'werewolf')?.name ?? '狼人',
+      '狼人袭击',
+      target?.name,
+    )
   }
 
   if (step === 'guard') {
@@ -353,6 +388,11 @@ export function actNight(game: GameState, targetId?: number, action = 'act'): Ga
     )
     result.guardedTarget =
       human.role === 'guard' && targetId ? targetId : randomFrom(candidates)?.id
+    recordAction(
+      players.find((player) => player.alive && player.role === 'guard')?.name ?? '守卫',
+      '守护',
+      players.find((player) => player.id === result.guardedTarget)?.name,
+    )
   }
 
   if (step === 'seer') {
@@ -373,6 +413,7 @@ export function actNight(game: GameState, targetId?: number, action = 'act'): Ga
           visibility: 'human',
         })
       }
+      recordAction(seer.name, '查验', finding)
     }
   }
 
@@ -385,25 +426,40 @@ export function actNight(game: GameState, targetId?: number, action = 'act'): Ga
     if (human.role === 'witch' && action === 'heal' && game.witchHeal && pendingVictim) {
       result.nightHealed = true
       result.witchHeal = false
+      recordAction(human.name, '使用解药', pendingVictim.name)
     }
     if (human.role === 'witch' && action === 'poison' && game.witchPoison && targetId) {
       const poisonTarget = players.find((player) => player.id === targetId && player.alive)
       if (poisonTarget) {
         result.poisonTarget = poisonTarget.id
         result.witchPoison = false
+        recordAction(human.name, '使用毒药', poisonTarget.name)
       }
     }
     if (witch && !witch.isHuman) {
       if (pendingVictim && game.witchHeal && Math.random() < 0.45) {
         result.nightHealed = true
         result.witchHeal = false
+        recordAction(witch.name, '使用解药', pendingVictim.name)
       } else if (game.witchPoison && Math.random() < 0.14) {
         const poisonCandidates = players.filter(
           (player) => player.alive && player.id !== witch.id,
         )
         result.poisonTarget = randomFrom(poisonCandidates)?.id
         if (result.poisonTarget) result.witchPoison = false
+        if (result.poisonTarget) {
+          recordAction(
+            witch.name,
+            '使用毒药',
+            players.find((player) => player.id === result.poisonTarget)?.name,
+          )
+        }
       }
+    }
+    if (witch && !actionHistory.some(
+      (entry) => entry.round === game.round && entry.actor === witch.name,
+    )) {
+      recordAction(witch.name, '女巫行动')
     }
   }
 
@@ -460,6 +516,19 @@ export function resolveVote(game: GameState, humanVote: number, aiVotes: Record<
   const eliminatedId = top[Math.floor(Math.random() * top.length)]
   const eliminated = players.find((player) => player.id === eliminatedId)
   if (eliminated) eliminated.alive = false
+  const actionHistory = [...game.actionHistory]
+  players
+    .filter((player) => player.alive && player.vote)
+    .forEach((player) => {
+      actionHistory.push({
+        id: makeId(),
+        round: game.round,
+        phase: game.phase,
+        actor: player.name,
+        action: '放逐投票',
+        target: players.find((target) => target.id === player.vote)?.name ?? '无效票',
+      })
+    })
   const logs = [
     ...game.logs,
     {
@@ -477,6 +546,7 @@ export function resolveVote(game: GameState, humanVote: number, aiVotes: Record<
     ...game,
     players,
     logs,
+    actionHistory,
     winner,
     phase: winner ? ('result' as const) : ('night' as const),
     round: winner ? game.round : game.round + 1,

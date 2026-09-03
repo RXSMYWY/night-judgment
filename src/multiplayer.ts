@@ -108,7 +108,7 @@ const roomSessionKey = (code: string) => `night-judgment-room-${code.toUpperCase
 
 export function loadRoomSession(code: string): RoomSession | null {
   try {
-    const value = sessionStorage.getItem(roomSessionKey(code))
+    const value = localStorage.getItem(roomSessionKey(code))
     return value ? JSON.parse(value) as RoomSession : null
   } catch {
     return null
@@ -116,11 +116,11 @@ export function loadRoomSession(code: string): RoomSession | null {
 }
 
 export function saveRoomSession(code: string, session: RoomSession) {
-  sessionStorage.setItem(roomSessionKey(code), JSON.stringify(session))
+  localStorage.setItem(roomSessionKey(code), JSON.stringify(session))
 }
 
 export function clearRoomSession(code: string) {
-  sessionStorage.removeItem(roomSessionKey(code))
+  localStorage.removeItem(roomSessionKey(code))
 }
 
 export function roomInviteUrl(code: string) {

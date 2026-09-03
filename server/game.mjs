@@ -8,6 +8,7 @@ const durationFromEnv = (name, fallback) => {
 export const NIGHT_ACTION_MS = durationFromEnv('NIGHT_ACTION_MS', 10_000)
 export const NIGHT_RESOLVE_MS = durationFromEnv('NIGHT_RESOLVE_MS', 1_200)
 export const SPEECH_TURN_MS = durationFromEnv('SPEECH_TURN_MS', 60_000)
+export const VOTE_MS = durationFromEnv('VOTE_MS', 60_000)
 export const BOT_SPEECH_DELAY_MS = durationFromEnv('BOT_SPEECH_DELAY_MS', 900)
 
 const PRESETS = {
@@ -47,6 +48,16 @@ const pick = (items) => items[Math.floor(Math.random() * items.length)]
 const living = (game) => game.players.filter((player) => player.alive)
 const addLog = (game, kind, text, speaker) => {
   game.logs.push({ id: randomUUID(), kind, text, speaker, round: game.round })
+}
+const addAction = (game, actor, action, target = '无') => {
+  game.actionHistory.push({
+    id: randomUUID(),
+    round: game.round,
+    phase: game.phase,
+    actor,
+    action,
+    target,
+  })
 }
 
 function winnerOf(players) {
@@ -105,6 +116,7 @@ export function createAuthoritativeGame(room, seed) {
     speechIndex: 0,
     speechTurnSeat: undefined,
     wolfChat: [],
+    actionHistory: [],
     deadline: 0,
   }
 }
@@ -148,6 +160,7 @@ export function playerView(room, viewer) {
       poisonTarget: own?.role === 'witch' ? game.poisonTarget : undefined,
       nightHealed: own?.role === 'witch' ? game.nightHealed : false,
       privateNotes: { [viewer.seat]: game.privateNotes[viewer.seat] ?? [] },
+      actionHistory: revealAll ? game.actionHistory : [],
     },
     deadline: game.deadline,
     speechOrder: game.speechOrder,
@@ -179,7 +192,6 @@ export function submitNightAction(room, actor, message) {
   }
   const target = game.players.find((item) => item.id === Number(message.targetId))
   if (message.targetId && !target?.alive) return false
-  if (player.role === 'werewolf' && target?.role === 'werewolf') return false
   if (player.role === 'guard' && target?.id === game.lastGuarded) return false
   if (player.role === 'seer' && target?.id === player.id) return false
   if (player.role === 'witch' && message.action === 'poison' && target?.id === player.id) {
@@ -222,16 +234,25 @@ export function resolveNightStep(room) {
   const step = game.nightStep
 
   if (step === 'werewolf') {
-    const wolfVotes = game.players
-      .filter((player) => player.alive && player.role === 'werewolf')
+    const wolves = game.players.filter(
+      (player) => player.alive && player.role === 'werewolf',
+    )
+    const wolfVotes = wolves
       .map((player) => {
         const action = game.nightActions[player.id]
-        return action?.targetId ?? (player.isBot ? botTarget(game, 'werewolf') : undefined)
+        const targetId = action?.targetId ?? (player.isBot ? botTarget(game, 'werewolf') : undefined)
+        const target = game.players.find((item) => item.id === targetId)
+        addAction(game, player.name, '狼人袭击投票', target?.name ?? '跳过')
+        return targetId
       })
       .filter(Boolean)
     const tally = new Map()
     wolfVotes.forEach((target) => tally.set(target, (tally.get(target) ?? 0) + 1))
-    game.wolfTarget = [...tally.entries()].sort((a, b) => b[1] - a[1])[0]?.[0]
+    const maxVotes = tally.size ? Math.max(...tally.values()) : 0
+    const tiedTargets = [...tally.entries()]
+      .filter(([, count]) => count === maxVotes)
+      .map(([target]) => target)
+    game.wolfTarget = pick(tiedTargets)
   }
 
   if (step === 'guard') {
@@ -239,6 +260,10 @@ export function resolveNightStep(room) {
     game.guardedTarget = guard
       ? game.nightActions[guard.id]?.targetId ?? (guard.isBot ? botTarget(game, 'guard') : undefined)
       : undefined
+    if (guard) {
+      const target = game.players.find((player) => player.id === game.guardedTarget)
+      addAction(game, guard.name, '守护', target?.name ?? '跳过')
+    }
   }
 
   if (step === 'seer') {
@@ -250,6 +275,9 @@ export function resolveNightStep(room) {
     if (seer && checked) {
       const finding = `${checked.name}是${checked.role === 'werewolf' ? '狼人' : '好人'}`
       game.privateNotes[seer.id] = [...(game.privateNotes[seer.id] ?? []), finding]
+      addAction(game, seer.name, '查验', finding)
+    } else if (seer) {
+      addAction(game, seer.name, '查验', '跳过')
     }
   }
 
@@ -268,10 +296,17 @@ export function resolveNightStep(room) {
     if (action?.action === 'heal' && canHeal && game.witchHeal) {
       game.nightHealed = true
       game.witchHeal = false
+      const target = game.players.find((player) => player.id === game.wolfTarget)
+      addAction(game, witch.name, '使用解药', target?.name ?? '无效目标')
     }
     if (action?.action === 'poison' && action.targetId && game.witchPoison) {
       game.poisonTarget = action.targetId
       game.witchPoison = false
+      const target = game.players.find((player) => player.id === action.targetId)
+      addAction(game, witch.name, '使用毒药', target?.name ?? '无效目标')
+    }
+    if (witch && action?.action !== 'heal' && action?.action !== 'poison') {
+      addAction(game, witch.name, '女巫行动', '跳过')
     }
   }
 
@@ -342,7 +377,13 @@ export function advanceBotSpeeches(room, onChange) {
   let player = game.players.find(
     (item) => item.id === game.speechOrder[game.speechIndex],
   )
-  while (player && !player.alive) {
+  while (player) {
+    const roomPlayer = room.players.find((item) => item.seat === player.id)
+    const isOfflineHuman = !player.isBot && !roomPlayer?.online
+    if (player.alive && !isOfflineHuman) break
+    if (player.alive && isOfflineHuman) {
+      addLog(game, 'system', `${player.name}已离线，发言环节自动跳过。`)
+    }
     game.speechIndex += 1
     player = game.players.find(
       (item) => item.id === game.speechOrder[game.speechIndex],
@@ -350,7 +391,7 @@ export function advanceBotSpeeches(room, onChange) {
   }
   if (!player) {
     game.phase = 'vote'
-    game.deadline = 0
+    game.deadline = Date.now() + VOTE_MS
     game.speechTurnSeat = undefined
     game.votes = {}
     living(game)
@@ -412,20 +453,37 @@ export function submitVote(room, actor, targetId) {
   }
   game.votes[voter.id] = target.id
   const humanSeats = room.players
-    .filter((player) => !player.isBot)
+    .filter((player) => !player.isBot && player.online)
     .map((player) => player.seat)
     .filter((seat) => game.players.find((player) => player.id === seat)?.alive)
   if (!humanSeats.every((seat) => game.votes[seat])) return true
+  resolveVote(room)
+  return true
+}
 
+export function resolveVote(room) {
+  const game = room.game
+  if (game.phase !== 'vote') return false
+  clearTimeout(room.gameTimer)
+  Object.entries(game.votes).forEach(([voterId, targetId]) => {
+    const voter = game.players.find((player) => player.id === Number(voterId))
+    const target = game.players.find((player) => player.id === Number(targetId))
+    if (voter && target) addAction(game, voter.name, '放逐投票', target.name)
+  })
   const tally = new Map()
   Object.values(game.votes).forEach((vote) => tally.set(vote, (tally.get(vote) ?? 0) + 1))
-  const max = Math.max(...tally.values())
+  const max = tally.size ? Math.max(...tally.values()) : 0
   const top = [...tally.entries()].filter(([, count]) => count === max).map(([id]) => id)
   const eliminated = game.players.find((player) => player.id === pick(top))
-  if (eliminated) eliminated.alive = false
-  addLog(game, 'death', `${eliminated?.name}以 ${max} 票被放逐出村。`)
+  if (eliminated) {
+    eliminated.alive = false
+    addLog(game, 'death', `${eliminated.name}以 ${max} 票被放逐出村。`)
+  } else {
+    addLog(game, 'system', '投票时间结束，本轮无人被放逐。')
+  }
   game.winner = winnerOf(game.players)
   game.phase = game.winner ? 'result' : 'night'
+  game.deadline = 0
   if (!game.winner) {
     game.round += 1
     game.nightStep = 'werewolf'
@@ -456,6 +514,30 @@ export function submitWolfChat(room, actor, text) {
     text: value,
     round: game.round,
   })
+  if (!actor.isBot) {
+    const targetMatch = value.match(/(?:杀|刀|袭击|咬)\s*(\d{1,2})\s*号?/)
+    const requestedTarget = targetMatch
+      ? game.players.find(
+          (item) => item.id === Number(targetMatch[1]) && item.alive,
+        )
+      : undefined
+    game.players
+      .filter((item) => item.alive && item.isBot && item.role === 'werewolf')
+      .forEach((bot) => {
+        if (requestedTarget && game.nightStep === 'werewolf') {
+          game.nightActions[bot.id] = { action: 'act', targetId: requestedTarget.id }
+        }
+        game.wolfChat.push({
+          id: randomUUID(),
+          seat: bot.id,
+          name: bot.name,
+          text: requestedTarget
+            ? `好的，今晚我跟票袭击${requestedTarget.name}。`
+            : '收到。你明确说“杀几号”后，我会跟随你的袭击票。',
+          round: game.round,
+        })
+      })
+  }
   game.wolfChat = game.wolfChat.slice(-30)
   return true
 }

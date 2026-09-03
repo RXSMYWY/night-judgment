@@ -35,6 +35,8 @@ import './App.css'
 type Screen = 'home' | 'setup' | 'room' | 'reveal' | 'game'
 
 const PLAYER_COUNTS = [6, 7, 8, 9, 10, 12, 15]
+const PLAYER_AVATAR_ATLAS = `${import.meta.env.BASE_URL}player-avatar-atlas.jpg`
+const ROLE_ATLAS = `${import.meta.env.BASE_URL}role-atlas.jpg`
 
 function AtlasPortrait({ player, large = false }: { player: Player; large?: boolean }) {
   const column = player.avatar % 4
@@ -42,7 +44,10 @@ function AtlasPortrait({ player, large = false }: { player: Player; large?: bool
   return (
     <div
       className={`atlas-portrait ${large ? 'large' : ''}`}
-      style={{ backgroundPosition: `${column * 33.333}% ${row * 33.333}%` }}
+      style={{
+        backgroundImage: `url(${PLAYER_AVATAR_ATLAS})`,
+        backgroundPosition: `${column * 33.333}% ${row * 33.333}%`,
+      }}
       role="img"
       aria-label={`${player.name}的公开头像`}
     />
@@ -53,6 +58,7 @@ function RolePortrait({ player }: { player: Player }) {
   return (
     <div
       className={`role-portrait sprite-${ROLES[player.role].sprite}`}
+      style={{ backgroundImage: `url(${ROLE_ATLAS})` }}
       role="img"
       aria-label={`你的${ROLES[player.role].name}身份卡`}
     />
@@ -233,6 +239,14 @@ function App() {
   const [nightActing, setNightActing] = useState(false)
   const speakingRef = useRef<number | undefined>(undefined)
   const roomSocket = useRef<WebSocket | null>(null)
+  const roomCodeRef = useRef('')
+  const reconnectTimerRef = useRef<number | undefined>(undefined)
+  const leavingRoomRef = useRef(false)
+  const audioRef = useRef<{
+    context: AudioContext
+    gain: GainNode
+    oscillators: OscillatorNode[]
+  } | null>(null)
   const roomPlayerIdRef = useRef('')
   const onlineStartedRef = useRef(false)
   const onlineVersionRef = useRef({ matchId: '', revision: -1 })
@@ -244,6 +258,7 @@ function App() {
   const [onlineMeta, setOnlineMeta] = useState<OnlineGameMeta | null>(null)
   const [countdown, setCountdown] = useState(0)
   const [wolfMessage, setWolfMessage] = useState('')
+  const [soundEnabled, setSoundEnabled] = useState(true)
 
   const human = game?.players.find((player) => player.isHuman)
   const role = human ? ROLES[human.role] : undefined
@@ -262,6 +277,7 @@ function App() {
       ? game.players.find((player) => player.id === game.wolfTarget && player.alive)
       : undefined
   const isOnlineGame = room?.status === 'playing'
+  const gamePhase = game?.phase
 
   const expectedRoles = useMemo(() => {
     const preset = getPreset(playerCount)
@@ -281,15 +297,20 @@ function App() {
     setScreen('reveal')
   }
 
-  function connectRoom(mode: 'create' | 'join', code?: string) {
-    roomSocket.current?.close()
-    onlineStartedRef.current = false
-    onlineVersionRef.current = { matchId: '', revision: -1 }
-    setRoom(null)
-    setGame(null)
-    setOnlineMeta(null)
-    setRoomError('')
-    setScreen('room')
+  function connectRoom(mode: 'create' | 'join', code?: string, reconnecting = false) {
+    const previousSocket = roomSocket.current
+    roomSocket.current = null
+    previousSocket?.close()
+    leavingRoomRef.current = false
+    if (!reconnecting) {
+      onlineStartedRef.current = false
+      onlineVersionRef.current = { matchId: '', revision: -1 }
+      setRoom(null)
+      setGame(null)
+      setOnlineMeta(null)
+      setRoomError('')
+      setScreen('room')
+    }
     const normalizedCode = code?.toUpperCase()
     const savedSession =
       mode === 'join' && normalizedCode ? loadRoomSession(normalizedCode) : null
@@ -307,6 +328,12 @@ function App() {
           return
         }
         if (message.type === 'joined') {
+          setRoomError('')
+          roomCodeRef.current = message.room.code
+          if (reconnectTimerRef.current) {
+            window.clearTimeout(reconnectTimerRef.current)
+            reconnectTimerRef.current = undefined
+          }
           roomPlayerIdRef.current = message.playerId
           setRoomPlayerId(message.playerId)
           setRoom(message.room)
@@ -354,6 +381,15 @@ function App() {
       setRoomStatus,
     )
     roomSocket.current = socket
+    socket.addEventListener('close', () => {
+      if (leavingRoomRef.current || roomSocket.current !== socket) return
+      const reconnectCode = roomCodeRef.current || normalizedCode
+      if (!reconnectCode) return
+      reconnectTimerRef.current = window.setTimeout(
+        () => connectRoom('join', reconnectCode, true),
+        1200,
+      )
+    })
     socket.addEventListener('open', () => {
       sendRoomMessage(
         socket,
@@ -372,11 +408,16 @@ function App() {
   }
 
   function leaveRoom() {
+    leavingRoomRef.current = true
+    if (reconnectTimerRef.current) window.clearTimeout(reconnectTimerRef.current)
     if (room) clearRoomSession(room.code)
     const url = new URL(window.location.href)
     url.searchParams.delete('room')
     window.history.replaceState({}, '', url)
-    roomSocket.current?.close()
+    const socket = roomSocket.current
+    roomSocket.current = null
+    socket?.close()
+    roomCodeRef.current = ''
     setRoom(null)
     setGame(null)
     setOnlineMeta(null)
@@ -395,7 +436,11 @@ function App() {
     const timer = code ? window.setTimeout(() => connectRoom('join', code), 0) : undefined
     return () => {
       if (timer) window.clearTimeout(timer)
-      roomSocket.current?.close()
+      if (reconnectTimerRef.current) window.clearTimeout(reconnectTimerRef.current)
+      leavingRoomRef.current = true
+      const socket = roomSocket.current
+      roomSocket.current = null
+      socket?.close()
     }
     // URL 邀请只在页面首次加载时消费，避免状态变化导致重复加入。
     // oxlint-disable-next-line react-hooks/exhaustive-deps
@@ -413,6 +458,51 @@ function App() {
     const timer = window.setInterval(update, 250)
     return () => window.clearInterval(timer)
   }, [onlineMeta?.deadline])
+
+  useEffect(() => {
+    const stopAudio = () => {
+      audioRef.current?.oscillators.forEach((oscillator) => oscillator.stop())
+      void audioRef.current?.context.close()
+      audioRef.current = null
+    }
+    stopAudio()
+    if (!soundEnabled || screen !== 'game' || !gamePhase) return stopAudio
+    const AudioContextClass = window.AudioContext
+    const context = new AudioContextClass()
+    const gain = context.createGain()
+    const isNight = gamePhase === 'night'
+    gain.gain.setValueAtTime(0.0001, context.currentTime)
+    gain.gain.exponentialRampToValueAtTime(isNight ? 0.018 : 0.012, context.currentTime + 1.2)
+    gain.connect(context.destination)
+    const frequencies = isNight ? [55, 82.4] : [146.8, 220]
+    const oscillators = frequencies.map((frequency, index) => {
+      const oscillator = context.createOscillator()
+      oscillator.type = index === 0 ? 'sine' : 'triangle'
+      oscillator.frequency.value = frequency
+      oscillator.detune.value = index ? 5 : -4
+      oscillator.connect(gain)
+      oscillator.start()
+      return oscillator
+    })
+    const cue = context.createOscillator()
+    const cueGain = context.createGain()
+    cue.type = 'sine'
+    cue.frequency.setValueAtTime(isNight ? 110 : 392, context.currentTime)
+    cue.frequency.exponentialRampToValueAtTime(
+      isNight ? 55 : 523.25,
+      context.currentTime + 1.4,
+    )
+    cueGain.gain.setValueAtTime(0.0001, context.currentTime)
+    cueGain.gain.exponentialRampToValueAtTime(0.045, context.currentTime + 0.08)
+    cueGain.gain.exponentialRampToValueAtTime(0.0001, context.currentTime + 1.5)
+    cue.connect(cueGain)
+    cueGain.connect(context.destination)
+    cue.start()
+    cue.stop(context.currentTime + 1.6)
+    audioRef.current = { context, gain, oscillators }
+    void context.resume().catch(() => undefined)
+    return stopAudio
+  }, [gamePhase, screen, soundEnabled])
 
   function appendLog(entry: Omit<LogEntry, 'id' | 'round'>) {
     setGame((current) =>
@@ -602,6 +692,13 @@ function App() {
               第 {game.round} 轮 · {game.phase === 'night' ? '夜幕' : game.phase === 'day' ? '黎明' : game.phase === 'vote' ? '审判' : '终局'}
             </span>
           )}
+          <button
+            className="text-button"
+            onClick={() => setSoundEnabled((enabled) => !enabled)}
+            aria-label={soundEnabled ? '关闭背景音效' : '开启背景音效'}
+          >
+            {soundEnabled ? '♫ 音效开' : '♩ 音效关'}
+          </button>
           <button className="text-button" onClick={() => setShowSettings(true)}>
             <span className={`api-dot ${settings.useRemote && settings.apiKey ? 'online' : ''}`} />
             {settings.useRemote && settings.apiKey ? 'DeepSeek' : '本地 AI'}
@@ -908,12 +1005,13 @@ function App() {
                   className={`player-seat ${selectedTarget === player.id ? 'selected' : ''} ${!player.alive ? 'dead' : ''} ${player.isHuman ? 'human' : ''}`}
                   disabled={
                     !player.alive ||
-                    player.isHuman ||
-                    game.phase === 'result' ||
-                    (isOnlineGame &&
+                    (player.isHuman && !(
                       game.phase === 'night' &&
-                      role.key === 'werewolf' &&
-                      onlineMeta?.wolfTeammates.includes(player.id))
+                      game.nightStep === 'werewolf' &&
+                      role.key === 'werewolf'
+                    )) ||
+                    game.phase === 'result' ||
+                    (game.phase === 'day')
                   }
                   onClick={() => setSelectedTarget(player.id)}
                 >
@@ -927,7 +1025,9 @@ function App() {
                   <AtlasPortrait player={player} />
                   <strong>{player.name}</strong>
                   <small>
-                    {!player.alive
+                    {game.phase === 'result'
+                      ? `${ROLES[player.role].name} · ${player.alive ? '存活' : '出局'}`
+                      : !player.alive
                       ? '已出局'
                       : player.isHuman
                         ? '你'
@@ -1073,21 +1173,45 @@ function App() {
               <div className="action-dock">
                 <div>
                   <span>放逐投票</span>
-                  <strong>{selectedTarget ? `已选择 ${game.players.find((item) => item.id === selectedTarget)?.name}` : '点击桌上的存活玩家进行选择'}</strong>
+                  <strong>
+                    {selectedTarget
+                      ? `已选择 ${game.players.find((item) => item.id === selectedTarget)?.name}`
+                      : '点击桌上的存活玩家进行选择'}
+                    {isOnlineGame && onlineMeta?.deadline ? ` · 剩余 ${countdown} 秒` : ''}
+                  </strong>
                 </div>
-                <button className="button danger" disabled={!selectedTarget || Boolean(onlineMeta?.hasVoted)} onClick={castVote}>
+                <button className="button danger" disabled={!human.alive || !selectedTarget || Boolean(onlineMeta?.hasVoted)} onClick={castVote}>
                   {onlineMeta?.hasVoted ? '已提交投票' : '落下审判票'}
                 </button>
               </div>
             )}
 
             {game.phase === 'result' && (
-              <div className={`result-dock ${game.winner}`}>
-                <div>
-                  <span>{game.winner === 'good' ? 'DAWN RETURNS' : 'ETERNAL NIGHT'}</span>
-                  <strong>{game.winner === 'good' ? '好人驱散了长夜' : '狼人吞噬了村庄'}</strong>
+              <div className="result-stack">
+                <div className={`result-dock ${game.winner}`}>
+                  <div>
+                    <span>{game.winner === 'good' ? 'DAWN RETURNS' : 'ETERNAL NIGHT'}</span>
+                    <strong>{game.winner === 'good' ? '好人驱散了长夜' : '狼人吞噬了村庄'}</strong>
+                  </div>
+                  <button className="button primary" onClick={restart}>再来一局</button>
                 </div>
-                <button className="button primary" onClick={restart}>再来一局</button>
+                <div className="action-history">
+                  <header>
+                    <span>本局行动复盘</span>
+                    <strong>身份与秘密行动已全部公开</strong>
+                  </header>
+                  <div>
+                    {(game.actionHistory ?? []).length
+                      ? (game.actionHistory ?? []).map((entry) => (
+                          <p key={entry.id}>
+                            <b>第 {entry.round} 轮</b>
+                            <span>{entry.actor}</span>
+                            {entry.action}：{entry.target}
+                          </p>
+                        ))
+                      : <p>本局没有可记录的秘密行动。</p>}
+                  </div>
+                </div>
               </div>
             )}
           </div>
