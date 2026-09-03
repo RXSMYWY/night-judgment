@@ -20,9 +20,13 @@ import {
   type Player,
 } from './game'
 import {
+  clearRoomSession,
   createRoomSocket,
+  loadRoomSession,
   roomInviteUrl,
+  saveRoomSession,
   sendRoomMessage,
+  type OnlineGameMeta,
   type RoomMessage,
   type RoomState,
 } from './multiplayer'
@@ -230,11 +234,16 @@ function App() {
   const speakingRef = useRef<number | undefined>(undefined)
   const roomSocket = useRef<WebSocket | null>(null)
   const roomPlayerIdRef = useRef('')
+  const onlineStartedRef = useRef(false)
+  const onlineVersionRef = useRef({ matchId: '', revision: -1 })
   const [room, setRoom] = useState<RoomState | null>(null)
   const [roomPlayerId, setRoomPlayerId] = useState('')
   const [roomStatus, setRoomStatus] = useState<'connecting' | 'online' | 'offline'>('offline')
   const [roomError, setRoomError] = useState('')
   const [copied, setCopied] = useState(false)
+  const [onlineMeta, setOnlineMeta] = useState<OnlineGameMeta | null>(null)
+  const [countdown, setCountdown] = useState(0)
+  const [wolfMessage, setWolfMessage] = useState('')
 
   const human = game?.players.find((player) => player.isHuman)
   const role = human ? ROLES[human.role] : undefined
@@ -247,11 +256,12 @@ function App() {
   } as const
   const activeNightRole =
     game?.nightStep === 'resolve' ? undefined : nightRoleByStep[game?.nightStep ?? 'werewolf']
-  const isHumanNightTurn = role?.key === activeNightRole
+  const isHumanNightTurn = Boolean(human?.alive && role?.key === activeNightRole)
   const pendingWitchVictim =
     game?.wolfTarget && game.wolfTarget !== game.guardedTarget
       ? game.players.find((player) => player.id === game.wolfTarget && player.alive)
       : undefined
+  const isOnlineGame = room?.status === 'playing'
 
   const expectedRoles = useMemo(() => {
     const preset = getPreset(playerCount)
@@ -273,12 +283,26 @@ function App() {
 
   function connectRoom(mode: 'create' | 'join', code?: string) {
     roomSocket.current?.close()
+    onlineStartedRef.current = false
+    onlineVersionRef.current = { matchId: '', revision: -1 }
     setRoom(null)
+    setGame(null)
+    setOnlineMeta(null)
     setRoomError('')
     setScreen('room')
+    const normalizedCode = code?.toUpperCase()
+    const savedSession =
+      mode === 'join' && normalizedCode ? loadRoomSession(normalizedCode) : null
+    let resumeAttempted = Boolean(savedSession)
     const socket = createRoomSocket(
       (message: RoomMessage) => {
         if (message.type === 'error') {
+          if (message.code === 'resume-failed' && normalizedCode && resumeAttempted) {
+            resumeAttempted = false
+            clearRoomSession(normalizedCode)
+            sendRoomMessage(socket, { type: 'join', code: normalizedCode })
+            return
+          }
           setRoomError(message.message)
           return
         }
@@ -286,14 +310,45 @@ function App() {
           roomPlayerIdRef.current = message.playerId
           setRoomPlayerId(message.playerId)
           setRoom(message.room)
+          saveRoomSession(message.room.code, {
+            playerId: message.playerId,
+            reconnectToken: message.reconnectToken,
+          })
+          window.history.replaceState({}, '', roomInviteUrl(message.room.code))
         }
         if (message.type === 'room') setRoom(message.room)
         if (message.type === 'started') {
           setRoom(message.room)
-          const ownSeat =
-            message.room.players.find((player) => player.id === roomPlayerIdRef.current)?.seat ?? 1
-          setGame(createGame(message.room.targetCount, ownSeat, message.seed))
-          setScreen('reveal')
+        }
+        if (message.type === 'game-state') {
+          const currentVersion = onlineVersionRef.current
+          if (
+            currentVersion.matchId === message.view.matchId &&
+            message.view.revision < currentVersion.revision
+          ) return
+          onlineVersionRef.current = {
+            matchId: message.view.matchId,
+            revision: message.view.revision,
+          }
+          setRoom(message.room)
+          setGame(message.view.game)
+          setSpeechOrder(message.view.speechOrder)
+          setSpeechIndex(message.view.speechIndex)
+          setOnlineMeta({
+            matchId: message.view.matchId,
+            revision: message.view.revision,
+            deadline: message.view.deadline,
+            speechOrder: message.view.speechOrder,
+            speechIndex: message.view.speechIndex,
+            hasActed: message.view.hasActed,
+            hasVoted: message.view.hasVoted,
+            wolfTeammates: message.view.wolfTeammates,
+            wolfChat: message.view.wolfChat,
+          })
+          if (!onlineStartedRef.current) {
+            onlineStartedRef.current = true
+            setScreen('reveal')
+          }
         }
       },
       setRoomStatus,
@@ -304,9 +359,28 @@ function App() {
         socket,
         mode === 'create'
           ? { type: 'create', targetCount: playerCount }
-          : { type: 'join', code },
+          : savedSession && normalizedCode
+            ? {
+                type: 'resume',
+                code: normalizedCode,
+                playerId: savedSession.playerId,
+                reconnectToken: savedSession.reconnectToken,
+              }
+            : { type: 'join', code: normalizedCode },
       )
     })
+  }
+
+  function leaveRoom() {
+    if (room) clearRoomSession(room.code)
+    const url = new URL(window.location.href)
+    url.searchParams.delete('room')
+    window.history.replaceState({}, '', url)
+    roomSocket.current?.close()
+    setRoom(null)
+    setGame(null)
+    setOnlineMeta(null)
+    setScreen('home')
   }
 
   async function copyInvite() {
@@ -327,6 +401,19 @@ function App() {
     // oxlint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
+  useEffect(() => {
+    if (!onlineMeta?.deadline) {
+      setCountdown(0)
+      return
+    }
+    const update = () => {
+      setCountdown(Math.max(0, Math.ceil((onlineMeta.deadline - Date.now()) / 1000)))
+    }
+    update()
+    const timer = window.setInterval(update, 250)
+    return () => window.clearInterval(timer)
+  }, [onlineMeta?.deadline])
+
   function appendLog(entry: Omit<LogEntry, 'id' | 'round'>) {
     setGame((current) =>
       current
@@ -343,6 +430,15 @@ function App() {
 
   async function takeNightAction(action = 'act') {
     if (!game || nightActing) return
+    if (isOnlineGame) {
+      sendRoomMessage(roomSocket.current, {
+        type: 'night-action',
+        action,
+        targetId: selectedTarget,
+      })
+      setSelectedTarget(undefined)
+      return
+    }
     setNightActing(true)
     const cues = {
       werewolf: '狼人正在月色下选择袭击目标……',
@@ -425,6 +521,12 @@ function App() {
     if (!game || !spokenText.trim() || thinking) return
     const player = game.players.find((item) => item.isHuman)
     if (!player) return
+    if (isOnlineGame) {
+      const text = spokenText.trim().slice(0, 240)
+      setSpeech('')
+      sendRoomMessage(roomSocket.current, { type: 'speech', text })
+      return
+    }
     setSpeech('')
     setThinking(true)
     const text = spokenText.trim().slice(0, 240)
@@ -449,11 +551,30 @@ function App() {
 
   function castVote() {
     if (!game || !selectedTarget) return
+    if (isOnlineGame) {
+      sendRoomMessage(roomSocket.current, { type: 'vote', targetId: selectedTarget })
+      setSelectedTarget(undefined)
+      return
+    }
     setGame(resolveVote(game, selectedTarget, aiVotes))
     setSelectedTarget(undefined)
     setAiVotes({})
     setSpeechOrder([])
     setSpeechIndex(0)
+  }
+
+  function sendWolfMessage() {
+    const text = wolfMessage.trim()
+    if (!text) return
+    sendRoomMessage(roomSocket.current, { type: 'wolf-chat', text })
+    setWolfMessage('')
+  }
+
+  function enterVillage() {
+    setScreen('game')
+    if (isOnlineGame) {
+      sendRoomMessage(roomSocket.current, { type: 'enter-game' })
+    }
   }
 
   function restart() {
@@ -631,9 +752,7 @@ function App() {
                     </>
                   )}
                   <button className="text-button" onClick={() => {
-                    roomSocket.current?.close()
-                    setRoom(null)
-                    setScreen('home')
+                    leaveRoom()
                   }}>
                     离开房间
                   </button>
@@ -727,7 +846,17 @@ function App() {
                 <span>阵营目标</span>
                 <strong>{role.camp === 'wolf' ? '隐藏身份，猎尽所有好人' : '找出并放逐所有狼人'}</strong>
               </div>
-              <button className="button primary large" onClick={() => setScreen('game')}>
+              {role.key === 'werewolf' && onlineMeta && (
+                <div className="camp-line wolf-team-line">
+                  <span>你的狼队友</span>
+                  <strong>
+                    {onlineMeta.wolfTeammates.length
+                      ? onlineMeta.wolfTeammates.map((id) => `${id}号`).join('、')
+                      : '你是场上唯一存活狼人'}
+                  </strong>
+                </div>
+              )}
+              <button className="button primary large" onClick={enterVillage}>
                 进入村庄
               </button>
             </div>
@@ -777,7 +906,15 @@ function App() {
                 <button
                   key={player.id}
                   className={`player-seat ${selectedTarget === player.id ? 'selected' : ''} ${!player.alive ? 'dead' : ''} ${player.isHuman ? 'human' : ''}`}
-                  disabled={!player.alive || player.isHuman || game.phase === 'result'}
+                  disabled={
+                    !player.alive ||
+                    player.isHuman ||
+                    game.phase === 'result' ||
+                    (isOnlineGame &&
+                      game.phase === 'night' &&
+                      role.key === 'werewolf' &&
+                      onlineMeta?.wolfTeammates.includes(player.id))
+                  }
                   onClick={() => setSelectedTarget(player.id)}
                 >
                   {activeSpeakerId === player.id && (
@@ -794,9 +931,15 @@ function App() {
                       ? '已出局'
                       : player.isHuman
                         ? '你'
+                        : isOnlineGame &&
+                            game.phase === 'night' &&
+                            onlineMeta?.wolfTeammates.includes(player.id)
+                          ? '狼队友'
                         : selectedTarget === player.id
                           ? '已选择'
-                          : '存活'}
+                          : player.isBot
+                            ? 'AI 玩家'
+                            : '真人玩家'}
                   </small>
                 </button>
               ))}
@@ -816,39 +959,80 @@ function App() {
                       game.nightStep === 'seer' ? '③ 预言家' :
                       game.nightStep === 'witch' ? '④ 女巫' : '⑤ 天亮结算'
                     }
+                    {isOnlineGame &&
+                      game.nightStep !== 'resolve' &&
+                      (onlineMeta?.deadline ? ` · ${countdown} 秒` : ' · 等待全员进入')}
                   </span>
                   <strong>
-                    {!isHumanNightTurn && game.nightStep !== 'resolve' && `${ROLES[activeNightRole!].name}正在秘密行动，你无法看到其选择`}
+                    {isOnlineGame && !onlineMeta?.deadline && '等待其他真人玩家查看身份并进入村庄'}
+                    {(!isOnlineGame || Boolean(onlineMeta?.deadline)) && !isHumanNightTurn && game.nightStep !== 'resolve' && `${ROLES[activeNightRole!].name}正在秘密行动，你无法看到其选择`}
                     {isHumanNightTurn && game.nightStep === 'werewolf' && '轮到你行动：选择今夜的袭击目标'}
                     {isHumanNightTurn && game.nightStep === 'guard' && '轮到你行动：选择一名玩家守护，不能连续守护同一人'}
                     {isHumanNightTurn && game.nightStep === 'seer' && '轮到你行动：选择一名玩家查验阵营'}
                     {isHumanNightTurn && game.nightStep === 'witch' && (pendingWitchVictim ? `${pendingWitchVictim.name}遭到袭击，可使用解药救治` : '今夜没有可使用解药救治的死亡目标')}
                     {game.nightStep === 'resolve' && '所有夜间角色均已行动，准备迎接黎明'}
+                    {isOnlineGame && onlineMeta?.hasActed && ' · 你的选择已提交'}
                   </strong>
                 </div>
                 <div className="dock-actions">
                   {isHumanNightTurn && game.nightStep === 'witch' && (
                     <>
-                      <button className="button ghost" disabled={!game.witchHeal || !pendingWitchVictim || nightActing} onClick={() => takeNightAction('heal')}>
+                      <button className="button ghost" disabled={!game.witchHeal || !pendingWitchVictim || nightActing || onlineMeta?.hasActed || (isOnlineGame && !onlineMeta?.deadline)} onClick={() => takeNightAction('heal')}>
                         {pendingWitchVictim ? `解救 ${pendingWitchVictim.name}` : '没有可救目标'}
                       </button>
-                      <button className="button danger" disabled={!game.witchPoison || !selectedTarget || nightActing} onClick={() => takeNightAction('poison')}>使用毒药</button>
-                      <button className="button ghost" disabled={nightActing} onClick={() => takeNightAction('skip')}>不使用药剂</button>
+                      <button className="button danger" disabled={!game.witchPoison || !selectedTarget || nightActing || onlineMeta?.hasActed || (isOnlineGame && !onlineMeta?.deadline)} onClick={() => takeNightAction('poison')}>使用毒药</button>
+                      <button className="button ghost" disabled={nightActing || onlineMeta?.hasActed || (isOnlineGame && !onlineMeta?.deadline)} onClick={() => takeNightAction('skip')}>不使用药剂</button>
                     </>
                   )}
                   {isHumanNightTurn && ['werewolf', 'seer', 'guard'].includes(game.nightStep) && (
-                    <button className="button primary" disabled={!selectedTarget || nightActing} onClick={() => takeNightAction('act')}>确认目标</button>
+                    <button className="button primary" disabled={!selectedTarget || nightActing || onlineMeta?.hasActed || (isOnlineGame && !onlineMeta?.deadline)} onClick={() => takeNightAction('act')}>确认目标</button>
                   )}
-                  {!isHumanNightTurn && game.nightStep !== 'resolve' && (
+                  {!isOnlineGame && !isHumanNightTurn && game.nightStep !== 'resolve' && (
                     <button className="button primary" disabled={nightActing} onClick={() => takeNightAction('act')}>
                       {nightActing ? '行动中…' : `让${ROLES[activeNightRole!].name}行动`}
                     </button>
                   )}
-                  {game.nightStep === 'resolve' && (
+                  {!isOnlineGame && game.nightStep === 'resolve' && (
                     <button className="button primary" disabled={nightActing} onClick={() => takeNightAction('resolve')}>
                       {nightActing ? '天色渐亮…' : '等待天亮'}
                     </button>
                   )}
+                </div>
+              </div>
+            )}
+
+            {isOnlineGame && game.phase === 'night' && role.key === 'werewolf' && human.alive && (
+              <div className="wolf-chat-panel">
+                <header>
+                  <div>
+                    <span>WOLF CHANNEL · 狼队私聊</span>
+                    <strong>
+                      队友：{onlineMeta?.wolfTeammates.map((id) => `${id}号`).join('、') || '无'}
+                    </strong>
+                  </div>
+                  <small>只有存活狼人可见</small>
+                </header>
+                <div className="wolf-chat-messages">
+                  {onlineMeta?.wolfChat.length
+                    ? onlineMeta.wolfChat.map((message) => (
+                        <p key={message.id}>
+                          <strong>{message.name}</strong>
+                          {message.text}
+                        </p>
+                      ))
+                    : <p className="empty-chat">和狼队友商量今晚袭击谁。</p>}
+                </div>
+                <div className="wolf-chat-compose">
+                  <input
+                    value={wolfMessage}
+                    onChange={(event) => setWolfMessage(event.target.value)}
+                    onKeyDown={(event) => {
+                      if (event.key === 'Enter') sendWolfMessage()
+                    }}
+                    maxLength={120}
+                    placeholder="输入仅狼队可见的消息…"
+                  />
+                  <button className="button danger" onClick={sendWolfMessage}>发送</button>
                 </div>
               </div>
             )}
@@ -875,6 +1059,7 @@ function App() {
                 <div>
                   <span>
                     {speechIndex < speechOrder.length ? `第 ${speechIndex + 1} / ${speechOrder.length} 位` : '本轮发言结束'}
+                    {isOnlineGame && onlineMeta?.deadline ? ` · ${countdown} 秒` : ''}
                     {' · '}{speech.length} / 240
                   </span>
                   <button className="button primary" disabled={!speech.trim() || thinking || !human.alive || !currentSpeaker?.isHuman} onClick={() => finishSpeech()}>
@@ -890,7 +1075,9 @@ function App() {
                   <span>放逐投票</span>
                   <strong>{selectedTarget ? `已选择 ${game.players.find((item) => item.id === selectedTarget)?.name}` : '点击桌上的存活玩家进行选择'}</strong>
                 </div>
-                <button className="button danger" disabled={!selectedTarget} onClick={castVote}>落下审判票</button>
+                <button className="button danger" disabled={!selectedTarget || Boolean(onlineMeta?.hasVoted)} onClick={castVote}>
+                  {onlineMeta?.hasVoted ? '已提交投票' : '落下审判票'}
+                </button>
               </div>
             )}
 

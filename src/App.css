@@ -1221,6 +1221,87 @@
   gap: 8px;
 }
 
+.wolf-team-line {
+  border-color: rgba(179, 46, 60, 0.45);
+  background: rgba(96, 14, 27, 0.22);
+}
+
+.wolf-chat-panel {
+  position: relative;
+  z-index: 4;
+  margin-top: 10px;
+  border: 1px solid rgba(179, 46, 60, 0.5);
+  background: rgba(25, 7, 12, 0.96);
+}
+
+.wolf-chat-panel header,
+.wolf-chat-compose {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 14px;
+}
+
+.wolf-chat-panel header {
+  border-bottom: 1px solid rgba(179, 46, 60, 0.25);
+}
+
+.wolf-chat-panel header span,
+.wolf-chat-panel header strong {
+  display: block;
+}
+
+.wolf-chat-panel header span {
+  color: #d56a77;
+  font: 9px Arial, sans-serif;
+  letter-spacing: 0.16em;
+}
+
+.wolf-chat-panel header strong {
+  margin-top: 4px;
+  font-size: 12px;
+}
+
+.wolf-chat-panel header small {
+  color: #7e6669;
+}
+
+.wolf-chat-messages {
+  max-height: 110px;
+  padding: 8px 14px;
+  overflow-y: auto;
+}
+
+.wolf-chat-messages p {
+  margin: 4px 0;
+  color: #c8b8b8;
+  font-size: 12px;
+}
+
+.wolf-chat-messages strong {
+  margin-right: 8px;
+  color: #e2818d;
+}
+
+.wolf-chat-messages .empty-chat {
+  color: #755e61;
+}
+
+.wolf-chat-compose {
+  border-top: 1px solid rgba(179, 46, 60, 0.25);
+}
+
+.wolf-chat-compose input {
+  flex: 1;
+  min-width: 0;
+  padding: 10px 12px;
+  border: 1px solid rgba(179, 46, 60, 0.32);
+  color: #eee2df;
+  background: rgba(3, 4, 8, 0.7);
+  outline: 0;
+}
+
 .speech-dock {
   position: relative;
   z-index: 4;

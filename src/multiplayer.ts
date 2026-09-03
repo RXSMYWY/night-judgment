@@ -1,3 +1,5 @@
+import type { GameState } from './game'
+
 export type RoomPlayer = {
   id: string
   seat: number
@@ -17,11 +19,57 @@ export type RoomState = {
 
 export type RoomMessage =
   | { type: 'connected' }
-  | { type: 'joined'; playerId: string; room: RoomState }
+  | {
+      type: 'joined'
+      playerId: string
+      reconnectToken: string
+      resumed?: boolean
+      room: RoomState
+    }
   | { type: 'room'; room: RoomState }
-  | { type: 'started'; room: RoomState; seed: string }
-  | { type: 'game-event'; playerId: string; event: unknown }
-  | { type: 'error'; message: string }
+  | { type: 'started'; room: RoomState }
+  | {
+      type: 'game-state'
+      room: RoomState
+      view: {
+        matchId: string
+        revision: number
+        game: GameState
+        deadline: number
+        speechOrder: number[]
+        speechIndex: number
+        hasActed: boolean
+        hasVoted: boolean
+        wolfTeammates: number[]
+        wolfChat: WolfChatMessage[]
+      }
+    }
+  | { type: 'error'; code?: string; message: string }
+
+export type WolfChatMessage = {
+  id: string
+  seat: number
+  name: string
+  text: string
+  round: number
+}
+
+export type OnlineGameMeta = {
+  matchId: string
+  revision: number
+  deadline: number
+  speechOrder: number[]
+  speechIndex: number
+  hasActed: boolean
+  hasVoted: boolean
+  wolfTeammates: number[]
+  wolfChat: WolfChatMessage[]
+}
+
+export type RoomSession = {
+  playerId: string
+  reconnectToken: string
+}
 
 const localRoomServerUrl = () => {
   const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
@@ -54,6 +102,25 @@ export function sendRoomMessage(socket: WebSocket | null, message: object) {
   if (socket?.readyState !== WebSocket.OPEN) return false
   socket.send(JSON.stringify(message))
   return true
+}
+
+const roomSessionKey = (code: string) => `night-judgment-room-${code.toUpperCase()}`
+
+export function loadRoomSession(code: string): RoomSession | null {
+  try {
+    const value = sessionStorage.getItem(roomSessionKey(code))
+    return value ? JSON.parse(value) as RoomSession : null
+  } catch {
+    return null
+  }
+}
+
+export function saveRoomSession(code: string, session: RoomSession) {
+  sessionStorage.setItem(roomSessionKey(code), JSON.stringify(session))
+}
+
+export function clearRoomSession(code: string) {
+  sessionStorage.removeItem(roomSessionKey(code))
 }
 
 export function roomInviteUrl(code: string) {

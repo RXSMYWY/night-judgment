@@ -8,7 +8,7 @@ export default defineConfig({
   server: {
     proxy: {
       '/ws': {
-        target: 'ws://localhost:3001',
+        target: process.env.ROOM_PROXY_TARGET || 'ws://localhost:3001',
         ws: true,
       },
     },

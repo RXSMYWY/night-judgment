@@ -29,6 +29,7 @@ export type Player = {
   role: RoleKey
   alive: boolean
   isHuman: boolean
+  isBot: boolean
   personality: string
   avatar: number
   vote?: number
@@ -216,6 +217,7 @@ export function createGame(count: number, humanSeat = 1, seed?: string): GameSta
     role,
     alive: true,
     isHuman: index + 1 === humanSeat,
+    isBot: index + 1 !== humanSeat,
     personality: index + 1 === humanSeat ? '由你决定' : PERSONALITIES[index % PERSONALITIES.length],
     avatar: index,
   }))
