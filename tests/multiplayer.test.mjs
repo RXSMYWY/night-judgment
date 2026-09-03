@@ -66,6 +66,94 @@ test('production countdown defaults stay at 10 seconds and 60 seconds', () => {
   assert.equal(SPEECH_TURN_MS, 60_000)
 })
 
+test('room creation only accepts supported whole-player counts', {
+  timeout: 8_000,
+}, async () => {
+  const port = 32_000 + Math.floor(Math.random() * 1_000)
+  const server = spawn(process.execPath, ['server/index.mjs'], {
+    cwd: process.cwd(),
+    env: { ...process.env, PORT: String(port) },
+    stdio: ['ignore', 'pipe', 'pipe'],
+  })
+  let client
+
+  try {
+    await waitForServer(port)
+    client = createClient(`ws://127.0.0.1:${port}/ws`)
+    await once(client.socket, 'open')
+    client.socket.send(JSON.stringify({ type: 'create', targetCount: 11 }))
+    const unsupportedCountRoom = await client.waitFor((message) => message.type === 'joined')
+    assert.equal(unsupportedCountRoom.room.targetCount, 9)
+
+    client.socket.send(JSON.stringify({ type: 'create', targetCount: 6.5 }))
+    const fractionalCountRoom = await client.waitFor((message) => message.type === 'joined')
+    assert.equal(fractionalCountRoom.room.targetCount, 9)
+  } finally {
+    client?.socket.close()
+    server.kill()
+    await once(server, 'exit').catch(() => undefined)
+  }
+})
+
+test('human players and bots enter one shared match without replacing human seats', {
+  timeout: 8_000,
+}, async () => {
+  const port = 33_000 + Math.floor(Math.random() * 1_000)
+  const server = spawn(process.execPath, ['server/index.mjs'], {
+    cwd: process.cwd(),
+    env: { ...process.env, PORT: String(port) },
+    stdio: ['ignore', 'pipe', 'pipe'],
+  })
+  const clients = []
+
+  try {
+    await waitForServer(port)
+    const url = `ws://127.0.0.1:${port}/ws`
+    for (let index = 0; index < 2; index += 1) {
+      const client = createClient(url)
+      clients.push(client)
+      await once(client.socket, 'open')
+    }
+
+    clients[0].socket.send(JSON.stringify({ type: 'create', targetCount: 6 }))
+    const hostJoin = await clients[0].waitFor((message) => message.type === 'joined')
+    clients[1].socket.send(JSON.stringify({ type: 'join', code: hostJoin.room.code }))
+    await clients[1].waitFor((message) => message.type === 'joined')
+
+    clients.forEach((client) => {
+      client.socket.send(JSON.stringify({ type: 'ready', ready: true }))
+    })
+    clients[0].socket.send(JSON.stringify({ type: 'fill-bots' }))
+    await clients[0].waitFor(
+      (message) =>
+        message.type === 'room' &&
+        message.room.players.length === 6 &&
+        message.room.players.every((player) => player.ready),
+    )
+    clients[0].socket.send(JSON.stringify({ type: 'start' }))
+
+    const states = await Promise.all(
+      clients.map((client) => client.waitFor((message) => message.type === 'game-state')),
+    )
+    assert.equal(new Set(states.map((message) => message.view.matchId)).size, 1)
+    states.forEach((message, viewerIndex) => {
+      assert.equal(message.room.players.filter((player) => !player.isBot).length, 2)
+      assert.equal(message.room.players.filter((player) => player.isBot).length, 4)
+      assert.deepEqual(
+        message.view.game.players.filter((player) => !player.isBot).map((player) => player.id),
+        [1, 2],
+      )
+      assert.equal(message.view.game.players[viewerIndex].isHuman, true)
+      assert.equal(message.view.game.players[1 - viewerIndex].isHuman, false)
+      assert.equal(message.view.game.players[1 - viewerIndex].isBot, false)
+    })
+  } finally {
+    clients.forEach((client) => client.socket.close())
+    server.kill()
+    await once(server, 'exit').catch(() => undefined)
+  }
+})
+
 test('six human clients share one authoritative game and private wolf channel', {
   timeout: 12_000,
 }, async () => {
@@ -179,6 +267,30 @@ test('six human clients share one authoritative game and private wolf channel', 
     chatStates.forEach((message, index) => {
       if (wolfIndexes.includes(index)) {
         assert.equal(message.view.wolfChat.at(-1)?.text, chatText)
+      } else {
+        assert.deepEqual(message.view.wolfChat, [])
+      }
+    })
+
+    const replyText = '收到，我补充观察其他人的行动'
+    clients[wolfIndexes[1]].socket.send(JSON.stringify({
+      type: 'wolf-chat',
+      text: replyText,
+    }))
+    const replyStates = await Promise.all(
+      clients.map((client) =>
+        client.waitFor(
+          (message) =>
+            message.type === 'game-state' &&
+            message.view.revision > chatStates[0].view.revision,
+        )),
+    )
+    replyStates.forEach((message, index) => {
+      if (wolfIndexes.includes(index)) {
+        assert.deepEqual(
+          message.view.wolfChat.slice(-2).map((entry) => entry.text),
+          [chatText, replyText],
+        )
       } else {
         assert.deepEqual(message.view.wolfChat, [])
       }

@@ -18,8 +18,13 @@ const PORT = Number(process.env.PORT || 3001)
 const FRONTEND_ORIGIN = process.env.FRONTEND_ORIGIN || '*'
 const rooms = new Map()
 const LOBBY_RECONNECT_GRACE_MS = 30_000
+const PLAYER_COUNTS = [6, 7, 8, 9, 10, 12, 15]
 
 const roomCode = () => Math.random().toString(36).slice(2, 8).toUpperCase()
+const normalizedTargetCount = (requestedCount) => {
+  const count = Number(requestedCount)
+  return Number.isInteger(count) && PLAYER_COUNTS.includes(count) ? count : 9
+}
 const send = (socket, payload) => {
   if (socket.readyState === WebSocket.OPEN) socket.send(JSON.stringify(payload))
 }
@@ -100,7 +105,7 @@ function createRoom(socket, requestedCount) {
     code,
     hostId: playerId,
     status: 'lobby',
-    targetCount: Math.min(15, Math.max(6, Number(requestedCount) || 9)),
+    targetCount: normalizedTargetCount(requestedCount),
     players: [{
       id: playerId,
       seat: 1,
