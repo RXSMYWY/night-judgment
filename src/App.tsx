@@ -37,6 +37,10 @@ type Screen = 'home' | 'setup' | 'room' | 'reveal' | 'game'
 const PLAYER_COUNTS = [6, 7, 8, 9, 10, 12, 15]
 const PLAYER_AVATAR_ATLAS = `${import.meta.env.BASE_URL}player-avatar-atlas.jpg`
 const ROLE_ATLAS = `${import.meta.env.BASE_URL}role-atlas.jpg`
+const DAY_BGM = `${import.meta.env.BASE_URL}audio/day-village.ogg`
+const NIGHT_BGM = `${import.meta.env.BASE_URL}audio/night-ambience.ogg`
+const DAWN_CUE = `${import.meta.env.BASE_URL}audio/dawn-door.ogg`
+const NIGHT_CUE = `${import.meta.env.BASE_URL}audio/night-knife.ogg`
 
 function AtlasPortrait({ player, large = false }: { player: Player; large?: boolean }) {
   const column = player.avatar % 4
@@ -242,11 +246,8 @@ function App() {
   const roomCodeRef = useRef('')
   const reconnectTimerRef = useRef<number | undefined>(undefined)
   const leavingRoomRef = useRef(false)
-  const audioRef = useRef<{
-    context: AudioContext
-    gain: GainNode
-    oscillators: OscillatorNode[]
-  } | null>(null)
+  const bgmRef = useRef<HTMLAudioElement | null>(null)
+  const cueRef = useRef<HTMLAudioElement | null>(null)
   const roomPlayerIdRef = useRef('')
   const onlineStartedRef = useRef(false)
   const onlineVersionRef = useRef({ matchId: '', revision: -1 })
@@ -461,46 +462,25 @@ function App() {
 
   useEffect(() => {
     const stopAudio = () => {
-      audioRef.current?.oscillators.forEach((oscillator) => oscillator.stop())
-      void audioRef.current?.context.close()
-      audioRef.current = null
+      bgmRef.current?.pause()
+      cueRef.current?.pause()
+      bgmRef.current = null
+      cueRef.current = null
     }
     stopAudio()
     if (!soundEnabled || screen !== 'game' || !gamePhase) return stopAudio
-    const AudioContextClass = window.AudioContext
-    const context = new AudioContextClass()
-    const gain = context.createGain()
     const isNight = gamePhase === 'night'
-    gain.gain.setValueAtTime(0.0001, context.currentTime)
-    gain.gain.exponentialRampToValueAtTime(isNight ? 0.018 : 0.012, context.currentTime + 1.2)
-    gain.connect(context.destination)
-    const frequencies = isNight ? [55, 82.4] : [146.8, 220]
-    const oscillators = frequencies.map((frequency, index) => {
-      const oscillator = context.createOscillator()
-      oscillator.type = index === 0 ? 'sine' : 'triangle'
-      oscillator.frequency.value = frequency
-      oscillator.detune.value = index ? 5 : -4
-      oscillator.connect(gain)
-      oscillator.start()
-      return oscillator
-    })
-    const cue = context.createOscillator()
-    const cueGain = context.createGain()
-    cue.type = 'sine'
-    cue.frequency.setValueAtTime(isNight ? 110 : 392, context.currentTime)
-    cue.frequency.exponentialRampToValueAtTime(
-      isNight ? 55 : 523.25,
-      context.currentTime + 1.4,
-    )
-    cueGain.gain.setValueAtTime(0.0001, context.currentTime)
-    cueGain.gain.exponentialRampToValueAtTime(0.045, context.currentTime + 0.08)
-    cueGain.gain.exponentialRampToValueAtTime(0.0001, context.currentTime + 1.5)
-    cue.connect(cueGain)
-    cueGain.connect(context.destination)
-    cue.start()
-    cue.stop(context.currentTime + 1.6)
-    audioRef.current = { context, gain, oscillators }
-    void context.resume().catch(() => undefined)
+    const bgm = new Audio(isNight ? NIGHT_BGM : DAY_BGM)
+    bgm.loop = true
+    bgm.volume = isNight ? 0.2 : 0.16
+    bgmRef.current = bgm
+
+    const cue = new Audio(isNight ? NIGHT_CUE : DAWN_CUE)
+    cue.volume = isNight ? 0.34 : 0.28
+    cueRef.current = cue
+
+    void bgm.play().catch(() => undefined)
+    void cue.play().catch(() => undefined)
     return stopAudio
   }, [gamePhase, screen, soundEnabled])
 
@@ -676,7 +656,9 @@ function App() {
   const currentSpeaker = game?.players.find((player) => player.id === currentSpeakerId)
 
   return (
-    <main className={`app-shell ${game?.phase === 'night' ? 'is-night' : ''}`}>
+    <main
+      className={`app-shell phase-${screen === 'game' && gamePhase ? gamePhase : 'night'}`}
+    >
       <div className="noise" aria-hidden="true" />
       <header className="topbar">
         <button className="brand" onClick={() => setScreen('home')} aria-label="返回首页">

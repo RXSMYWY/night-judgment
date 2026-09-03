@@ -3,10 +3,20 @@
   min-height: 100vh;
   overflow: hidden;
   background:
-    linear-gradient(rgba(5, 9, 15, 0.58), rgba(5, 8, 13, 0.9)),
-    url("./assets/village-night-bg.png") center / cover fixed,
+    linear-gradient(rgba(5, 9, 15, 0.42), rgba(5, 8, 13, 0.82)),
+    url("./assets/village-night-bg-v2.png") center / cover fixed,
     radial-gradient(circle at 72% 20%, rgba(69, 82, 111, 0.22), transparent 24rem),
     linear-gradient(180deg, #0a1019 0%, #080b10 58%, #0b0d11 100%);
+  transition: background-image 900ms ease;
+}
+
+.app-shell.phase-day,
+.app-shell.phase-vote,
+.app-shell.phase-result {
+  background:
+    linear-gradient(rgba(18, 17, 16, 0.3), rgba(7, 10, 14, 0.78)),
+    url("./assets/village-day-bg.png") center / cover fixed,
+    linear-gradient(180deg, #6f725f 0%, #33352f 55%, #101318 100%);
 }
 
 .app-shell::before {
@@ -976,7 +986,7 @@
   padding: 26px 24px 28px;
   background:
     radial-gradient(ellipse at center, rgba(46, 52, 63, 0.22), transparent 52%),
-    linear-gradient(rgba(9, 14, 21, 0.7), rgba(8, 11, 16, 0.9));
+    linear-gradient(rgba(9, 14, 21, 0.46), rgba(8, 11, 16, 0.78));
 }
 
 .table-stage::before {
