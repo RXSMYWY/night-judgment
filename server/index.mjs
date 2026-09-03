@@ -20,6 +20,7 @@ const FRONTEND_ORIGIN = process.env.FRONTEND_ORIGIN || '*'
 const rooms = new Map()
 const LOBBY_RECONNECT_GRACE_MS = 30_000
 const PLAYER_COUNTS = [6, 7, 8, 9, 10, 12, 15]
+const RELEASE = '2026-09-03-multiplayer-v2'
 
 const roomCode = () => Math.random().toString(36).slice(2, 8).toUpperCase()
 const normalizedTargetCount = (requestedCount) => {
@@ -384,7 +385,7 @@ const server = createServer((request, response) => {
   response.setHeader('Access-Control-Allow-Origin', FRONTEND_ORIGIN)
   response.setHeader('Content-Type', 'application/json; charset=utf-8')
   if (request.url === '/health') {
-    response.end(JSON.stringify({ ok: true, rooms: rooms.size }))
+    response.end(JSON.stringify({ ok: true, rooms: rooms.size, release: RELEASE }))
     return
   }
   response.statusCode = 404
